@@ -14,6 +14,9 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	"net"
+	"syscall"
+	"fmt"
 )
 
 type EOFReader struct{}
@@ -252,6 +255,63 @@ var _ = Describe("Downloader", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(stats.Size()).To(BeNumerically(">", 0))
+			})
+		})
+
+		Context("when the connection is reset", func() {
+			FIt("successfully retries the download", func() {
+				responses := []*http.Response{
+					{
+						Request: &http.Request{
+							URL: &url.URL{
+								Scheme: "https",
+								Host:   "example.com",
+								Path:   "some-file",
+							},
+						},
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(strings.NewReader("something")),
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(strings.NewReader("something")),
+					},
+				}
+
+				resetErr := &net.OpError{Err: fmt.Errorf(syscall.ECONNRESET.Error())}
+				errors := []error{nil, resetErr, nil}
+
+				httpClient.DoStub = func(req *http.Request) (*http.Response, error) {
+					count := httpClient.DoCallCount() - 1
+					return responses[count], errors[count]
+				}
+
+				ranger.BuildRangeReturns([]download.Range{{Lower: 0, Upper: 15}}, nil)
+
+				downloader := download.Client{
+					HTTPClient: httpClient,
+					Ranger:     ranger,
+					Bar:        bar,
+				}
+
+				tmpFile, err := ioutil.TempFile("", "")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = downloader.Get(tmpFile, downloadLinkFetcher, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				stats, err := tmpFile.Stat()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(stats.Size()).To(BeNumerically(">", 0))
+				Expect(bar.AddArgsForCall(0)).To(Equal(-4))
+
+				content, err := ioutil.ReadAll(tmpFile)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(string(content)).To(Equal("something"))
 			})
 		})
 	})

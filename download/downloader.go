@@ -8,6 +8,7 @@ import (
 	"os"
 	"golang.org/x/sync/errgroup"
 	"github.com/pivotal-cf/go-pivnet/logger"
+	"syscall"
 )
 
 //go:generate counterfeiter -o ./fakes/ranger.go --fake-name Ranger . ranger
@@ -123,6 +124,8 @@ Retry:
 	req.Header = rangeHeader
 
 	resp, err := c.HTTPClient.Do(req)
+	fmt.Println("!!!!!!!!!!!!!!!!!!!!!!!!")
+
 	if err != nil {
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Temporary() {
@@ -154,8 +157,14 @@ Retry:
 	proxyReader = c.Bar.NewProxyReader(resp.Body)
 
 	bytesWritten, err := io.Copy(fileWriter, proxyReader)
+
 	if err != nil {
 		if err == io.ErrUnexpectedEOF {
+			c.Bar.Add(int(-1 * bytesWritten))
+			goto Retry
+		}
+		operr, _ := err.(*net.OpError)
+		if operr.Err.Error() == syscall.ECONNRESET.Error() {
 			c.Bar.Add(int(-1 * bytesWritten))
 			goto Retry
 		}
