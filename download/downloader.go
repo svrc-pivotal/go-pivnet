@@ -1,6 +1,7 @@
 package download
 
 import (
+	"strconv"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,7 @@ type Client struct {
 	Ranger     ranger
 	Bar        bar
 	Logger     logger.Logger
+	Retries    string
 }
 
 func (c Client) Get(
@@ -110,7 +112,22 @@ func (c Client) retryableRequest(contentURL string, rangeHeader http.Header, fil
 	defer fileWriter.Close()
 
 	var err error
+        maxRetries := -1
+        retries := 0
+        if c.Retries == "" {
+		c.Logger.Debug("retryableRequest with unlimited retries")
+	} else if maxRetries, err = strconv.Atoi(c.Retries); err == nil {
+		c.Logger.Debug("retryableRequest with max retries: %d", logger.Data{"maxRetries": maxRetries})
+        } else if err != nil {
+		return fmt.Errorf("could not convert download retries to number: %s reason:  %s", c.Retries, err)
+	}
 Retry:
+        if maxRetries == -1 {
+          // do nothing, unlimited retries
+        } else if retries > maxRetries {
+           return fmt.Errorf("maximum retries reached: %d max: %d", retries, maxRetries)
+        }
+        retries++
 	_, err = fileWriter.Seek(startingByte, 0)
 	if err != nil {
 		return fmt.Errorf("failed to seek to correct byte of output file: %s", err)
@@ -165,7 +182,12 @@ Retry:
 			c.Bar.Add(int(-1 * bytesWritten))
 			goto Retry
 		}
-		return fmt.Errorf("failed to write file during io.Copy: %s", err)
+		if maxRetries == -1 {
+			return fmt.Errorf("failed to write file during io.Copy: %s", err)
+                }
+		c.Logger.Debug("failed to write file during io.Copy: %s", logger.Data{"error":err})
+		c.Bar.Add(int(-1 * bytesWritten))
+		goto Retry
 	}
 
 	return nil

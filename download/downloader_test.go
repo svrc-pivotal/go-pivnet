@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pivotal-cf/go-pivnet/logger/loggerfakes"
 	"github.com/pivotal-cf/go-pivnet/download"
 	"github.com/pivotal-cf/go-pivnet/download/fakes"
 
@@ -56,12 +57,14 @@ var _ = Describe("Downloader", func() {
 		ranger     *fakes.Ranger
 		bar        *fakes.Bar
 		downloadLinkFetcher *fakes.DownloadLinkFetcher
+		logger *loggerfakes.FakeLogger
 	)
 
 	BeforeEach(func() {
 		httpClient = &fakes.HTTPClient{}
 		ranger = &fakes.Ranger{}
 		bar = &fakes.Bar{}
+		logger = &loggerfakes.FakeLogger{}
 
 		bar.NewProxyReaderStub = func(reader io.Reader) (io.Reader) { return reader }
 
@@ -123,6 +126,7 @@ var _ = Describe("Downloader", func() {
 				HTTPClient: httpClient,
 				Ranger:     ranger,
 				Bar:        bar,
+				Logger:     logger,
 			}
 
 			tmpFile, err := ioutil.TempFile("", "")
@@ -202,6 +206,8 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
+					Retries:    "1",
 				}
 
 				tmpFile, err := ioutil.TempFile("", "")
@@ -220,6 +226,53 @@ var _ = Describe("Downloader", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(string(content)).To(Equal("something"))
+			})
+		})
+
+    Context("when there is an unexpected EOF with retries set to 0", func() {
+			It("returns an error", func() {
+				responses := []*http.Response{
+					{
+						Request: &http.Request{
+							URL: &url.URL{
+								Scheme: "https",
+								Host:   "example.com",
+								Path:   "some-file",
+							},
+						},
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(io.MultiReader(strings.NewReader("some"), EOFReader{})),
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(strings.NewReader("something")),
+					},
+				}
+				errors := []error{nil, nil, nil}
+
+				httpClient.DoStub = func(req *http.Request) (*http.Response, error) {
+					count := httpClient.DoCallCount() - 1
+					return responses[count], errors[count]
+				}
+
+				ranger.BuildRangeReturns([]download.Range{{Lower: 0, Upper: 15}}, nil)
+
+				downloader := download.Client{
+					HTTPClient: httpClient,
+					Ranger:     ranger,
+					Bar:        bar,
+					Logger:     logger,
+					Retries:    "0",
+				}
+
+				tmpFile, err := ioutil.TempFile("", "")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = downloader.Get(tmpFile, downloadLinkFetcher, GinkgoWriter)
+				Expect(err).To(MatchError(ContainSubstring("maximum retries reached")))
+
 			})
 		})
 
@@ -256,6 +309,7 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
 				}
 
 				tmpFile, err := ioutil.TempFile("", "")
@@ -306,6 +360,65 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
+				}
+
+				tmpFile, err := ioutil.TempFile("", "")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = downloader.Get(tmpFile, downloadLinkFetcher, GinkgoWriter)
+				Expect(err).NotTo(HaveOccurred())
+
+				stats, err := tmpFile.Stat()
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(stats.Size()).To(BeNumerically(">", 0))
+				Expect(bar.AddArgsForCall(0)).To(Equal(-4))
+
+				content, err := ioutil.ReadAll(tmpFile)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(string(content)).To(Equal("something"))
+			})
+		})
+
+		Context("when the connection receives an error and retries are set to a limited number", func() {
+			It("successfully retries the download", func() {
+				responses := []*http.Response{
+					{
+						Request: &http.Request{
+							URL: &url.URL{
+								Scheme: "https",
+								Host:   "example.com",
+								Path:   "some-file",
+							},
+						},
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(io.MultiReader(strings.NewReader("some"), UnknownErrorReader{})),
+					},
+					{
+						StatusCode: http.StatusPartialContent,
+						Body:       ioutil.NopCloser(strings.NewReader("something")),
+					},
+				}
+
+				errors := []error{nil, nil, nil}
+
+				httpClient.DoStub = func(req *http.Request) (*http.Response, error) {
+					count := httpClient.DoCallCount() - 1
+					return responses[count], errors[count]
+				}
+
+				ranger.BuildRangeReturns([]download.Range{{Lower: 0, Upper: 15}}, nil)
+
+				downloader := download.Client{
+					HTTPClient: httpClient,
+					Ranger:     ranger,
+					Bar:        bar,
+					Logger:     logger,
+					Retries:    "1",
 				}
 
 				tmpFile, err := ioutil.TempFile("", "")
@@ -360,6 +473,7 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
 				}
 
 				tmpFile, err := ioutil.TempFile("", "")
@@ -398,6 +512,44 @@ var _ = Describe("Downloader", func() {
 
 				err := downloader.Get(nil, downloadLinkFetcher, GinkgoWriter)
 				Expect(err).To(MatchError("failed to make HEAD request: failed request"))
+			})
+		})
+
+		Context("when the retries is not a number", func() {
+			It("returns an error", func() {
+				responses := []*http.Response{
+					{
+						Request: &http.Request{
+							URL: &url.URL{
+								Scheme: "https",
+								Host:   "example.com",
+								Path:   "some-file",
+							},
+						},
+					},
+					{},
+				}
+				errors := []error{nil, errors.New("failed GET")}
+
+				httpClient.DoStub = func(req *http.Request) (*http.Response, error) {
+					count := httpClient.DoCallCount() - 1
+					return responses[count], errors[count]
+				}
+
+				ranger.BuildRangeReturns([]download.Range{{}}, nil)
+
+				downloader := download.Client{
+					HTTPClient: httpClient,
+					Ranger:     ranger,
+					Bar:        bar,
+					Logger:     logger,
+					Retries:    "foo",
+				}
+				file, err := ioutil.TempFile("", "")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = downloader.Get(file, downloadLinkFetcher, GinkgoWriter)
+				Expect(err).To(MatchError(ContainSubstring("could not convert download retries to number")))
 			})
 		})
 
@@ -452,6 +604,7 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
 				}
 
 				file, err := ioutil.TempFile("", "")
@@ -492,6 +645,7 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
 				}
 
 				file, err := ioutil.TempFile("", "")
@@ -532,6 +686,7 @@ var _ = Describe("Downloader", func() {
 					HTTPClient: httpClient,
 					Ranger:     ranger,
 					Bar:        bar,
+					Logger:     logger,
 				}
 
 				closedFile, err := ioutil.TempFile("", "")

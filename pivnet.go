@@ -51,6 +51,7 @@ type ClientConfig struct {
 	Token             string
 	UserAgent         string
 	SkipSSLValidation bool
+	Retries           string
 }
 
 func NewClient(
@@ -74,6 +75,7 @@ func NewClient(
 		HTTPClient: httpClient,
 		Ranger:     ranger,
 		Logger:     logger,
+		Retries:    config.Retries,
 	}
 
 	client := Client{
