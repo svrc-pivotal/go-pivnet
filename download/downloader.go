@@ -174,19 +174,19 @@ Retry:
 	bytesWritten, err := io.Copy(fileWriter, proxyReader)
 	if err != nil {
 		if err == io.ErrUnexpectedEOF {
-			c.Bar.Add(int(-1 * bytesWritten))
+			startingByte = startingByte + bytesWritten
 			goto Retry
 		}
 		operr, ok := err.(*net.OpError)
 		if ok && operr.Err.Error() == syscall.ECONNRESET.Error() {
-			c.Bar.Add(int(-1 * bytesWritten))
+                        startingByte = startingByte + bytesWritten
 			goto Retry
 		}
 		if maxRetries == -1 {
 			return fmt.Errorf("failed to write file during io.Copy: %s", err)
                 }
 		c.Logger.Debug("failed to write file during io.Copy: %s", logger.Data{"error":err})
-		c.Bar.Add(int(-1 * bytesWritten))
+                startingByte = startingByte + bytesWritten
 		goto Retry
 	}
 
